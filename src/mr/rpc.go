@@ -19,8 +19,27 @@ type ExampleArgs struct {
 }
 
 type ExampleReply struct {
-	Y int
+	Y []int
 }
+
+type NullArgs struct {}
+
+type ProgressReduceArgs struct {
+	ReduceN int
+	//might put input already done here
+}
+
+type ProgressReduceReply []string
+
+type RequestTaskReply struct {
+	Exit bool
+	IsMapTask bool
+	IsReduceTask bool
+	Files []string
+	ReduceN int //reduce number or partition number
+}
+
+type FinishArgs RequestTaskReply
 
 // Add your RPC definitions here.
 
