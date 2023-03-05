@@ -135,9 +135,10 @@ func Worker(mapf func(string, string) []KeyValue,
 					intermediateArray[i] = currentValue
 				}
 			}
-			mr_outString += key + " " + reducef(key, intermediateArray[start: ]) + "\n"
-
+			mr_outString += key + " " + reducef(key, intermediateArray[start: ])
+			mr_outString = strings.TrimSuffix(mr_outString, "\n")
 			filenameString := fmt.Sprintf("mr-out-%d", reply.ReduceN)
+
 			os.WriteFile(filenameString, []byte(mr_outString), 0777)
 			CallFinish(FinishArgs{false, false, true, nil, reply.ReduceN})
 		} else {
