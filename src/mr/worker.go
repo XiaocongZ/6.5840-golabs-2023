@@ -62,7 +62,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	//os.Exit(0)
 	for {
 		reply := CallRequestTask()
-		fmt.Println(reply)
+		//fmt.Println(reply)
 		if reply.Exit {
 			return
 		} else if reply.IsMapTask {
@@ -81,6 +81,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			for i := 0; i < reply.ReduceN; i++ {
 				intermediateFilename := toIntermediateFilename(reply.Files[0])
 				filenameString := fmt.Sprintf("%s_%d", intermediateFilename, i)
+				intermediateArray[i] = strings.TrimSuffix(intermediateArray[i], "\n")
 				os.WriteFile(filenameString, []byte(intermediateArray[i]), 0777)
 			}
 			//notify finish
@@ -114,14 +115,24 @@ func Worker(mapf func(string, string) []KeyValue,
 			key := ""
 			var start int
 			for i, keyValue := range intermediateArray {
+				if keyValue == "" {
+					//fmt.Println("a null keyValue")
+					continue
+				}
+				currentKey, currentValue := getKeyValue(keyValue)
 				if key == "" {
-					key = getKey(keyValue)
+					key = currentKey
 					start = i
-				} else if key != getKey(keyValue) {
+					//strip keys to feed only values to reducef
+					intermediateArray[i] = currentValue
+				} else if key != currentKey {
 					//feed to reducef; start a new key
 					mr_outString += key + " " + reducef(key, intermediateArray[start: i]) + "\n"
-					key = getKey(keyValue)
+					key = currentKey
 					start = i
+					intermediateArray[i] = currentValue
+				} else { // key == currentKey
+					intermediateArray[i] = currentValue
 				}
 			}
 			mr_outString += key + " " + reducef(key, intermediateArray[start: ]) + "\n"
@@ -135,8 +146,12 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 }
 
-func getKey(keyValue string) string {
-	return strings.Split(keyValue, " ")[0]
+func getKeyValue(keyValue string) (string, string) {
+	if keyValue == "" {
+		fmt.Println("null keyvalue")
+		os.Exit(2)
+	}
+	return strings.Split(keyValue, " ")[0], strings.Split(keyValue, " ")[1]
 }
 
 func toIntermediateFilename(inputFilename string) string {
@@ -150,7 +165,7 @@ func CallRequestTask() RequestTaskReply{
 	reply := RequestTaskReply{}
 	ok := call("Coordinator.RequestTask", &args, &reply)
 	if ok {
-		fmt.Println("ok", reply)
+		//fmt.Println("ok", reply)
 		return reply
 	} else {
 		return RequestTaskReply{true, false, false, nil, 0}
@@ -161,7 +176,7 @@ func CallFinish(args FinishArgs) {
 	reply := NullArgs{}
 	ok := call("Coordinator.Finish", &args, &reply)
 	if ok {
-		fmt.Println("CallFinish: ok")
+		//fmt.Println("CallFinish: ok")
 	} else {
 		fmt.Println("CallFinish: error")
 		return
