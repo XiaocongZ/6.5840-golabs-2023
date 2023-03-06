@@ -81,8 +81,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			for i := 0; i < reply.ReduceN; i++ {
 				intermediateFilename := toIntermediateFilename(reply.Files[0])
 				filenameString := fmt.Sprintf("%s_%d", intermediateFilename, i)
-				intermediateArray[i] = strings.TrimSuffix(intermediateArray[i], "\n")
-				os.WriteFile(filenameString, []byte(intermediateArray[i]), 0777)
+
+				os.WriteFile(filenameString, []byte(intermediateArray[i]), 0666)
 			}
 			//notify finish
 			CallFinish(FinishArgs{false, true, false, reply.Files, 0})
@@ -128,6 +128,9 @@ func Worker(mapf func(string, string) []KeyValue,
 				} else if key != currentKey {
 					//feed to reducef; start a new key
 					mr_outString += key + " " + reducef(key, intermediateArray[start: i]) + "\n"
+					if key == "" {
+						panic("null key in reduce")
+					}
 					key = currentKey
 					start = i
 					intermediateArray[i] = currentValue
@@ -135,11 +138,14 @@ func Worker(mapf func(string, string) []KeyValue,
 					intermediateArray[i] = currentValue
 				}
 			}
-			mr_outString += key + " " + reducef(key, intermediateArray[start: ])
-			mr_outString = strings.TrimSuffix(mr_outString, "\n")
+			if key != "" {
+				mr_outString += key + " " + reducef(key, intermediateArray[start: ]) + "\n"
+			}
+
 			filenameString := fmt.Sprintf("mr-out-%d", reply.ReduceN)
 
-			os.WriteFile(filenameString, []byte(mr_outString), 0777)
+			os.WriteFile(filenameString, []byte(mr_outString), 0666)
+
 			CallFinish(FinishArgs{false, false, true, nil, reply.ReduceN})
 		} else {
 			time.Sleep(time.Second)

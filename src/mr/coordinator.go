@@ -13,9 +13,46 @@ import "sync"
 
 type Task struct {
 	//isMapTask bool
+	mutex sync.Mutex
 	state int
 	timeStamp time.Time
 }
+//obtain unlocked dispatchable task and expired dispatched task
+func (t *Task) tryObtain() bool {
+	if t.state == finished || t.state == nullTask {
+		return false
+	}
+	// state is dispatchable or dispatched
+	if t.mutex.TryLock() {
+		defer t.mutex.Unlock()
+		if t.state == dispatchable {
+			t.state = dispatched
+			t.timeStamp = time.Now()
+			return true
+		} else if t.state == dispatched && time.Now().Sub(t.timeStamp).Seconds() > 5 {
+			t.timeStamp = time.Now()
+			return true
+		}
+	}
+	//missed lock
+	return false
+}
+func (t *Task) finish() bool {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	if t.state == finished {
+		fmt.Println("A Task finished twice")
+		return true
+	} else if t.state == dispatched {
+		t.state = finished
+		t.timeStamp = time.Now()
+		return true
+	} else {
+		fmt.Printf("Task state %d", t.state)
+		panic("Task cannot finish: wrong state transition")
+	}
+}
+
 //enum for Task.state
 const (
 	nullTask int = iota //not initialized
@@ -23,14 +60,16 @@ const (
 	dispatched
 	finished
 )
-
+//map is not thread safe, item in map cannot be pointer receive due to rehash; use slice instead.
+//each Task has a mutex
 type Coordinator struct {
 	// Your definitions here.
 	nReduce int
+	nMap int
 	files []string
 	workerStates map[string]worker
-	mapTasks sync.Map
-	reduceTasks sync.Map
+	mapTasks []Task
+	reduceTasks []Task
 	isMapDone bool
 	isDone bool
 }
@@ -61,68 +100,31 @@ func (c *Coordinator) RequestTask(args *NullArgs, reply *RequestTaskReply) error
 		*reply = pleaseExit
 		return nil
 	}
-	/*
-	for file, task := range c.mapTasks {
-		if task.state == dispatchable {
-			//TODO dispatch lock
 
-			*reply = RequestTaskReply {false, true, false, []string{file}, c.nReduce}
-			c.mapTasks[file] = Task{dispatched, time.Now()}
+	for i, _ := range c.mapTasks {
+		pTask := &c.mapTasks[i]
+		if pTask.tryObtain() {
+			*reply = RequestTaskReply {false, true, false, []string{c.files[i]}, c.nReduce}
 			return nil
-			break
 		}
 	}
-	*/
-	c.mapTasks.Range(
-		func(k , v interface{}) bool {
-			file, _ := k.(string)
-			task, _ := v.(Task)
-			if task.state == dispatchable {
-				*reply = RequestTaskReply {false, true, false, []string{file}, c.nReduce}
-				c.mapTasks.Store( file , Task{dispatched, time.Now()} )
-				return false
-			}
-			return true
-		})
-	if reply.IsMapTask {
-		return nil
-	}
+
 	//TODO parallel map & reduce
-	if ! c.MapDone() {
-		//tell worker to wait
-		*reply = pleaseWait
-		return nil
-	}
-	/*
-	for reduceN, task := range c.reduceTasks {
-		if task.state == dispatchable {
-			//TODO dispatch lock
-			*reply = RequestTaskReply {false, false, true, c.files, reduceN}
-			c.reduceTasks[reduceN] = Task{dispatched, time.Now()}
-			return nil
-			break
-		}
-	}
-	*/
-	c.reduceTasks.Range(
-		func(k, v interface{}) bool {
-			reduceN, _ := k.(int)
-			task, _ := v.(Task)
-			if task.state == dispatchable {
-				*reply = RequestTaskReply {false, false, true, c.files, reduceN}
-				c.reduceTasks.Store( reduceN , Task{dispatched, time.Now()} )
-				return false
-			}
-			return true
-		})
-	if reply.IsReduceTask {
-		return nil
-	} else {
-		//likely all dispatched, wait
+	if ! c.MapDone() { //tell worker to wait
 		*reply = pleaseWait
 		return nil
 	}
 
+	for reduceN, _ := range c.reduceTasks {
+		pTask := &c.reduceTasks[reduceN]
+		if pTask.tryObtain() {
+			*reply = RequestTaskReply {false, false, true, c.files, reduceN}
+			return nil
+		}
+	}
+	//likely all dispatched, wait
+	*reply = pleaseWait
+	return nil
 }
 /*
 func (c *Coordinator) ProgressReduce(reduceN *int, reply *ProgressReduceReply) error {
@@ -140,11 +142,15 @@ func (c *Coordinator) ProgressReduce(reduceN *int, reply *ProgressReduceReply) e
 //notify coordinator that work is done
 func (c *Coordinator) Finish(args *FinishArgs, reply *NullArgs) error {
 	if args.IsMapTask == true {
-		// TODO: lock
-		c.mapTasks.Store( args.Files[0], Task{finished, time.Now()} )
+		//c.mapTasks[args.Files[0]].finish()
+		for i, _ := range c.mapTasks {
+			if c.files[i] == args.Files[0] {
+				c.mapTasks[i].finish()
+				break
+			}
+		}
 	} else {
-		// TODO: lock
-		c.reduceTasks.Store( args.ReduceN, Task{finished, time.Now()} )
+		c.reduceTasks[args.ReduceN].finish()
 	}
 
 	return nil
@@ -182,24 +188,13 @@ func (c *Coordinator) Done() bool {
 	if c.isDone {
 		return true
 	}
-	isDone := true
-
-	c.reduceTasks.Range(
-		func(k, v interface{}) bool {
-			//reduceN, _ := k.(int)
-			task, _ := v.(Task)
-			if task.state != finished {
-				isDone = false
-				return false
-			}
-			return true
-		})
-	if isDone {
-		c.isDone = true
-		return true
-	} else {
-		return false
+	for _, task := range c.reduceTasks {
+		if task.state != finished {
+			return false
+		}
 	}
+	c.isDone = true
+	return true
 
 }
 
@@ -207,25 +202,13 @@ func (c *Coordinator) MapDone() bool {
 	if c.isMapDone {
 		return true
 	}
-	isMapDone := true // tentative true value
-
-	c.mapTasks.Range(
-		func(k, v interface{}) bool {
-			//file, _ := k.(string)
-			task, _ := v.(Task)
-			if task.state != finished {
-				isMapDone = false
-				return false
-			}
-			return true
-		})
-
-	if isMapDone {
-		c.isMapDone = true
-		return true
-	} else {
-		return false
+	for _, task := range c.mapTasks {
+		if task.state != finished {
+			return false
+		}
 	}
+	c.isMapDone = true
+	return true
 }
 
 //
@@ -236,26 +219,27 @@ func (c *Coordinator) MapDone() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
 		nReduce,
+		len(files),
 		files,
 		make(map[string]worker),
-		sync.Map{},
-		sync.Map{},
+		make([]Task, len(files)),
+		make([]Task, nReduce),
 		false,
 		false}
 
 	// Your code here.
 	//initialize mapTasks
-	for _, inputfile := range files{
-		c.mapTasks.Store( inputfile , Task{dispatchable, time.Now()} )
+	for i, _ := range files{
+		c.mapTasks[i] = Task{sync.Mutex{}, dispatchable, time.Now()}
 	}
 
 	//initialize reduceTasks
 	//TODO reduce tasks shouldn't be dispatchable at first
 	for i := 0; i < nReduce; i++ {
 		//TODO need to change, dispatchable after map
-		c.reduceTasks.Store( i , Task{dispatchable, time.Now()} )
+		c.reduceTasks[i] = Task{sync.Mutex{}, dispatchable, time.Now()}
 	}
-
+	//start multi-threading
 	c.server()
 	return &c
 }
